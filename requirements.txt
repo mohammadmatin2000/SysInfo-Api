@@ -1,0 +1,6 @@
+django==4.2
+python-decouple
+psycopg[binary]
+psutil
+djangorestframework
+drf_yasg
