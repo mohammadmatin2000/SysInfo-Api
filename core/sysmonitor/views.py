@@ -4,7 +4,16 @@ import socket
 import time
 import platform
 import psutil
-import GPUtil
+import os
+import json
+
+try:
+    import GPUtil
+except ImportError:
+    GPUtil = None
+
+# مسیر فایل مشترک روی Host که داخل کانتینر mount شده
+SHARED_INFO_FILE = os.path.join(os.path.dirname(__file__), "system_info.json")
 
 # ======================================================================================================================
 class SystemInfoView(APIView):
@@ -30,7 +39,7 @@ class SystemInfoView(APIView):
             "current_frequency_mhz": cpu_freq.current if cpu_freq else None,
         }
 
-        # رم (حافظه)
+        # رم
         virtual_mem = psutil.virtual_memory()
         memory_info = {
             "total_gb": round(virtual_mem.total / (1024 ** 3), 2),
@@ -40,9 +49,8 @@ class SystemInfoView(APIView):
         }
 
         # دیسک‌ها
-        disk_partitions = psutil.disk_partitions()
         disks = []
-        for partition in disk_partitions:
+        for partition in psutil.disk_partitions():
             try:
                 usage = psutil.disk_usage(partition.mountpoint)
                 disks.append({
@@ -55,54 +63,68 @@ class SystemInfoView(APIView):
                     "usage_percent": usage.percent,
                 })
             except PermissionError:
-                pass  # بعضی پارتیشن‌ها اجازه دسترسی ندارند
+                pass
 
         # شبکه
-        net_if_addrs = psutil.net_if_addrs()
         network = []
-        for interface_name, addresses in net_if_addrs.items():
-            for addr in addresses:
-                if addr.family == socket.AF_INET:  # IPv4
+        for iface, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                if addr.family == socket.AF_INET:
                     network.append({
-                        "interface": interface_name,
+                        "interface": iface,
                         "ip_address": addr.address,
                         "netmask": addr.netmask,
                         "broadcast_ip": addr.broadcast,
                     })
-                elif addr.family == socket.AF_PACKET:  # MAC Address
+                elif hasattr(socket, 'AF_PACKET') and addr.family == socket.AF_PACKET:
                     network.append({
-                        "interface": interface_name,
+                        "interface": iface,
                         "mac_address": addr.address,
                     })
 
         # GPU
         gpus = []
-        try:
-            gpu_list = GPUtil.getGPUs()
-            for gpu in gpu_list:
-                gpus.append({
-                    "id": gpu.id,
-                    "name": gpu.name,
-                    "driver_version": getattr(gpu, 'driver_version', None),
-                    "memory_total_gb": round(gpu.memoryTotal / 1024, 2),
-                    "memory_used_gb": round(gpu.memoryUsed / 1024, 2),
-                    "memory_free_gb": round(gpu.memoryFree / 1024, 2),
-                    "load_percent": round(gpu.load * 100, 1),
-                    "temperature_c": gpu.temperature,
-                })
-        except Exception as e:
-            gpus.append({"error": str(e)})
+        if GPUtil:
+            try:
+                for gpu in GPUtil.getGPUs():
+                    gpus.append({
+                        "id": gpu.id,
+                        "name": gpu.name,
+                        "driver_version": getattr(gpu, 'driver_version', None),
+                        "memory_total_gb": round(gpu.memoryTotal / 1024, 2),
+                        "memory_used_gb": round(gpu.memoryUsed / 1024, 2),
+                        "memory_free_gb": round(gpu.memoryFree / 1024, 2),
+                        "load_percent": round(gpu.load * 100, 1),
+                        "temperature_c": gpu.temperature,
+                    })
+            except Exception:
+                gpus = []
 
         # باتری
         battery = None
         if hasattr(psutil, "sensors_battery"):
-            batt = psutil.sensors_battery()
-            if batt:
-                battery = {
-                    "percent": batt.percent,
-                    "secs_left": batt.secsleft,
-                    "plugged_in": batt.power_plugged,
-                }
+            try:
+                batt = psutil.sensors_battery()
+                if batt:
+                    battery = {
+                        "percent": batt.percent,
+                        "secs_left": batt.secsleft,
+                        "plugged_in": batt.power_plugged,
+                    }
+            except Exception:
+                battery = None
+
+        # fallback به فایل system_info.json اگر GPU یا باتری پیدا نشد
+        if (not gpus or battery is None) and os.path.exists(SHARED_INFO_FILE):
+            try:
+                with open(SHARED_INFO_FILE, 'r') as f:
+                    shared = json.load(f)
+                    if not gpus:
+                        gpus = shared.get("gpu", [])
+                    if battery is None:
+                        battery = shared.get("battery", None)
+            except Exception as e:
+                print("Error reading system_info.json:", e)
 
         # ساختار نهایی
         data = {
@@ -120,29 +142,67 @@ class SystemInfoView(APIView):
 # ======================================================================================================================
 class SystemStatusView(APIView):
     def get(self, request):
-        # مصرف CPU
-        cpu_percent = psutil.cpu_percent(interval=1)
-        # مصرف رم
+        # CPU
+        cpu_percent_per_core = psutil.cpu_percent(interval=1, percpu=True)
+        cpu_total_percent = psutil.cpu_percent(interval=None)  # درصد کل CPU بدون وقفه
+        cpu_freq = psutil.cpu_freq()
+        cpu_info = {
+            "total_usage_percent": cpu_total_percent,
+            "per_core_usage_percent": cpu_percent_per_core,
+            "cores_physical": psutil.cpu_count(logical=False),
+            "cores_logical": psutil.cpu_count(logical=True),
+            "max_frequency_mhz": cpu_freq.max if cpu_freq else None,
+            "min_frequency_mhz": cpu_freq.min if cpu_freq else None,
+            "current_frequency_mhz": cpu_freq.current if cpu_freq else None,
+        }
+
+        # رم
         mem = psutil.virtual_memory()
-        # مصرف دیسک
+        memory_info = {
+            "total_gb": round(mem.total / (1024 ** 3), 2),
+            "used_gb": round(mem.used / (1024 ** 3), 2),
+            "available_gb": round(mem.available / (1024 ** 3), 2),
+            "usage_percent": mem.percent,
+        }
+
+        # دیسک
         disk = psutil.disk_usage('/')
-        # آپتایم
-        uptime_seconds = time.time() - psutil.boot_time()
+        disk_info = {
+            "total_gb": round(disk.total / (1024 ** 3), 2),
+            "used_gb": round(disk.used / (1024 ** 3), 2),
+            "free_gb": round(disk.free / (1024 ** 3), 2),
+            "usage_percent": disk.percent,
+        }
+
+        # GPU
+        gpus = []
+        if 'GPUtil' in globals() and GPUtil:
+            try:
+                for gpu in GPUtil.getGPUs():
+                    gpus.append({
+                        "id": gpu.id,
+                        "name": gpu.name,
+                        "memory_total_gb": round(gpu.memoryTotal / 1024, 2),
+                        "memory_used_gb": round(gpu.memoryUsed / 1024, 2),
+                        "memory_free_gb": round(gpu.memoryFree / 1024, 2),
+                        "load_percent": round(gpu.load * 100, 1),
+                        "temperature_c": gpu.temperature,
+                    })
+            except Exception:
+                gpus = []
+
+        # زمان روشن بودن سیستم
+        uptime_seconds = int(time.time() - psutil.boot_time())
 
         data = {
-            "cpu_usage_percent": cpu_percent,
-            "memory": {
-                "total_gb": round(mem.total / (1024 ** 3), 2),
-                "used_gb": round(mem.used / (1024 ** 3), 2),
-                "available_gb": round(mem.available / (1024 ** 3), 2),
-                "usage_percent": mem.percent,
-            },
-            "disk": {
-                "total_gb": round(disk.total / (1024 ** 3), 2),
-                "used_gb": round(disk.used / (1024 ** 3), 2),
-                "free_gb": round(disk.free / (1024 ** 3), 2),
-                "usage_percent": disk.percent,
-            },
-            "uptime_seconds": int(uptime_seconds)
+            "cpu": cpu_info,
+            "memory": memory_info,
+            "disk": disk_info,
+            "gpu": gpus,
+            "uptime_seconds": uptime_seconds
         }
+
         return Response(data)
+
+
+# ======================================================================================================================

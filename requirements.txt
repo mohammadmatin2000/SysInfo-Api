@@ -6,3 +6,4 @@ djangorestframework
 drf_yasg
 gputil
 wmi
+pynvml
