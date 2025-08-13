@@ -1,10 +1,8 @@
-django==4.2
-python-decouple
-psycopg[binary]
-psutil
-djangorestframework
-drf_yasg
-gputil
-wmi
-pynvml
-setuptools
+django==4.2             # فریم‌ورک اصلی برای توسعه وب با پایتون
+psutil                  # برای دسترسی به اطلاعات سخت‌افزاری سیستم (CPU، RAM، دیسک، شبکه و …)
+djangorestframework     # برای ساخت API در Django
+drf_yasg                # برای تولید مستندات OpenAPI/Swagger برای API‌های Django REST
+gputil                  # برای خواندن اطلاعات GPU مانند مصرف حافظه، دما و بار پردازنده
+wmi                     # مخصوص ویندوز، برای خواندن اطلاعات سخت‌افزاری از طریق Windows Management Instrumentation
+pynvml                  # برای مدیریت و مانیتورینگ کارت‌های NVIDIA GPU (در صورت نیاز به اطلاعات دقیق از NVIDIA)
+setuptools              # ابزار استاندارد نصب پکیج‌های پایتون (اغلب توسط pip استفاده می‌شود)
