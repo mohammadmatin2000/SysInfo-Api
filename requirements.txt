@@ -4,3 +4,5 @@ psycopg[binary]
 psutil
 djangorestframework
 drf_yasg
+gputil
+wmi

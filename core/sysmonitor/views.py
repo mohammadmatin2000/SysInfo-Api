@@ -4,6 +4,8 @@ import socket
 import time
 import platform
 import psutil
+import GPUtil
+
 # ======================================================================================================================
 class SystemInfoView(APIView):
     def get(self, request):
@@ -41,16 +43,19 @@ class SystemInfoView(APIView):
         disk_partitions = psutil.disk_partitions()
         disks = []
         for partition in disk_partitions:
-            usage = psutil.disk_usage(partition.mountpoint)
-            disks.append({
-                "device": partition.device,
-                "mount_point": partition.mountpoint,
-                "fstype": partition.fstype,
-                "total_gb": round(usage.total / (1024 ** 3), 2),
-                "used_gb": round(usage.used / (1024 ** 3), 2),
-                "free_gb": round(usage.free / (1024 ** 3), 2),
-                "usage_percent": usage.percent,
-            })
+            try:
+                usage = psutil.disk_usage(partition.mountpoint)
+                disks.append({
+                    "device": partition.device,
+                    "mount_point": partition.mountpoint,
+                    "fstype": partition.fstype,
+                    "total_gb": round(usage.total / (1024 ** 3), 2),
+                    "used_gb": round(usage.used / (1024 ** 3), 2),
+                    "free_gb": round(usage.free / (1024 ** 3), 2),
+                    "usage_percent": usage.percent,
+                })
+            except PermissionError:
+                pass  # بعضی پارتیشن‌ها اجازه دسترسی ندارند
 
         # شبکه
         net_if_addrs = psutil.net_if_addrs()
@@ -64,13 +69,31 @@ class SystemInfoView(APIView):
                         "netmask": addr.netmask,
                         "broadcast_ip": addr.broadcast,
                     })
-                elif addr.family == socket.AF_PACKET:  # MAC Address (لینوکس/مک)
+                elif addr.family == socket.AF_PACKET:  # MAC Address
                     network.append({
                         "interface": interface_name,
                         "mac_address": addr.address,
                     })
 
-        # باتری (اگه باشه)
+        # GPU
+        gpus = []
+        try:
+            gpu_list = GPUtil.getGPUs()
+            for gpu in gpu_list:
+                gpus.append({
+                    "id": gpu.id,
+                    "name": gpu.name,
+                    "driver_version": getattr(gpu, 'driver_version', None),
+                    "memory_total_gb": round(gpu.memoryTotal / 1024, 2),
+                    "memory_used_gb": round(gpu.memoryUsed / 1024, 2),
+                    "memory_free_gb": round(gpu.memoryFree / 1024, 2),
+                    "load_percent": round(gpu.load * 100, 1),
+                    "temperature_c": gpu.temperature,
+                })
+        except Exception as e:
+            gpus.append({"error": str(e)})
+
+        # باتری
         battery = None
         if hasattr(psutil, "sensors_battery"):
             batt = psutil.sensors_battery()
@@ -88,6 +111,7 @@ class SystemInfoView(APIView):
             "memory": memory_info,
             "disks": disks,
             "network": network,
+            "gpu": gpus,
             "battery": battery,
         }
 
@@ -96,13 +120,13 @@ class SystemInfoView(APIView):
 # ======================================================================================================================
 class SystemStatusView(APIView):
     def get(self, request):
-        # مصرف CPU (میانگین 1 ثانیه)
+        # مصرف CPU
         cpu_percent = psutil.cpu_percent(interval=1)
         # مصرف رم
         mem = psutil.virtual_memory()
-        # مصرف دیسک کل (مثلا پارتیشن ریشه)
+        # مصرف دیسک
         disk = psutil.disk_usage('/')
-        # آپتایم سیستم
+        # آپتایم
         uptime_seconds = time.time() - psutil.boot_time()
 
         data = {
@@ -122,5 +146,3 @@ class SystemStatusView(APIView):
             "uptime_seconds": int(uptime_seconds)
         }
         return Response(data)
-
-# ======================================================================================================================
